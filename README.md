@@ -50,7 +50,7 @@ overwritten on update.
    ```
    (If the tree drifted from upstream main, insert the code manually per the
    step-by-step recipe in `SKILL.md`.)
-2. Enable the field in `~/.hermes/config.yaml`:
+2. Enable the field in the Hermes config file (open with `hermes config edit`):
    ```yaml
    display:
      runtime_footer:

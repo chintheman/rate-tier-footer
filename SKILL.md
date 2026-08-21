@@ -64,7 +64,7 @@ ls ~/.hermes/hermes-agent/gateway/runtime_footer.py
 ```bash
 grep -c "rate_tier" ~/.hermes/hermes-agent/gateway/runtime_footer.py
 grep -c "rate_windows" ~/.hermes/hermes-agent/gateway/runtime_footer.py
-grep -A6 "runtime_footer" ~/.hermes/config.yaml
+grep -A6 "runtime_footer" "$(hermes config path)"
 ```
 
 - `rate_tier` AND `rate_windows` present in `runtime_footer.py` → the code is
@@ -122,7 +122,9 @@ upstream diff — use it as the source of truth for every code block above.
 
 ### Step 3 — Enable the config
 
-Add to `~/.hermes/config.yaml` (merge into existing `display:`):
+Add the block below to the Hermes config file (the path printed by
+`hermes config path` — open it with `hermes config edit`, merge into the
+existing `display:` section):
 
 ```yaml
 display:
