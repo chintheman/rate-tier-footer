@@ -1,8 +1,8 @@
 diff --git a/gateway/runtime_footer.py b/gateway/runtime_footer.py
-index 8719524d5a..a336dbf79d 100644
+index 8719524d5..2d8f4d1ed 100644
 --- a/gateway/runtime_footer.py
 +++ b/gateway/runtime_footer.py
-@@ -16,9 +16,31 @@ Available fields:
+@@ -16,9 +16,44 @@ Available fields:
      context_pct  — last-call context occupancy as a percent (``5%``)
      latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
      cwd          — home-relative working dir (``~``)
@@ -18,8 +18,11 @@ index 8719524d5a..a336dbf79d 100644
 +set, so a footer whose ``fields`` are unset renders exactly as before.
 +
 +``rate_windows`` (optional) — time-of-use pricing windows, keyed by model
-+substring (matched case-insensitively against the bare model id). Peak hours
-+are half-open ``[start, end)`` in the window's timezone::
++substring (matched case-insensitively against the bare model id). When
++several keys match a model, the LONGEST key wins, so a specific matcher
++(``deepseek-v4-flash``) always beats a generic one (``deepseek``) regardless
++of config order. Peak hours are half-open ``[start, end)`` in the window's
++timezone and may wrap midnight (``[[22, 2]]`` = 22:00–01:59, all peak)::
 +
 +    display:
 +      runtime_footer:
@@ -29,14 +32,24 @@ index 8719524d5a..a336dbf79d 100644
 +          deepseek:                       # model matcher
 +            tz: Asia/Singapore            # optional, default UTC
 +            peak: [[9, 12], [14, 18]]     # half-open hours in that tz
++            off_peak_days:                # optional: all-day off-peak rule
++              tz: Asia/Shanghai           #   weekday checked in THIS tz
++              days: [sat, sun]            #   never the UTC date
++
++``off_peak_days`` marks whole days as off-peak (e.g. DeepSeek bills off-peak
++all day on Beijing weekends). The weekday is evaluated in the rule's own
++timezone — never the UTC date — so a provider whose weekend is bounded in a
++fixed-offset local time stays correct even when a peak window crosses the
++UTC date line.
 +
 +Built-in default (used when the key is absent): DeepSeek's published windows
-+(01-04 and 06-10 UTC). User entries deep-merge over the default, so a partial
-+``rate_windows`` map keeps the DeepSeek default for any matcher not listed.
++(01-04 and 06-10 UTC; off-peak all day on Beijing Saturdays/Sundays). User
++entries deep-merge over the default, so a partial ``rate_windows`` map keeps
++the DeepSeek default for any matcher not listed.
  
  Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
  Users can toggle the global setting with ``/footer on|off`` from both the CLI
-@@ -34,12 +56,29 @@ piecemeal, the footer is sent as a separate trailing message via
+@@ -34,12 +69,34 @@ piecemeal, the footer is sent as a separate trailing message via
  
  from __future__ import annotations
  
@@ -55,23 +68,28 @@ index 8719524d5a..a336dbf79d 100644
 +# Built-in time-of-use pricing windows. Keyed by model substring; peak hours
 +# are half-open [start, end) in the entry's timezone. Source for the DeepSeek
 +# default: https://api-docs.deepseek.com/quick_start/pricing (verified
-+# 2026-08-20) — peak 01:00-04:00 and 06:00-10:00 UTC, off-peak is half price.
++# 2026-08-22) — peak 01:00-04:00 and 06:00-10:00 UTC, off-peak is half price,
++# and off-peak applies ALL DAY on Saturdays and Sundays Beijing time.
 +_DEFAULT_RATE_WINDOWS: dict[str, dict[str, Any]] = {
 +    "deepseek": {
 +        "tz": "UTC",
 +        "peak": [(1, 4), (6, 10)],
++        "off_peak_days": {
++            "tz": "Asia/Shanghai",
++            "days": ["sat", "sun"],
++        },
 +    },
 +}
 +
  
  def _home_relative_cwd(cwd: str) -> str:
      """Return *cwd* with ``$HOME`` collapsed to ``~``.  Empty string if unset."""
-@@ -62,6 +101,93 @@ def _model_short(model: Optional[str]) -> str:
+@@ -62,6 +119,132 @@ def _model_short(model: Optional[str]) -> str:
      return model.rsplit("/", 1)[-1]
  
  
 +# DeepSeek peak/off-peak billing windows, in UTC (source: api-docs.deepseek.com
-+# /quick_start/pricing, verified 2026-08-20). Peak hours are 01:00-04:00 and
++# /quick_start/pricing, verified 2026-08-22). Peak hours are 01:00-04:00 and
 +# 06:00-10:00 UTC; all other hours are off-peak at half the price. SGT (UTC+8)
 +# equivalents: 09:00-12:00 and 14:00-18:00. Kept for backward-compatible
 +# helpers; the config-driven path is ``_DEFAULT_RATE_WINDOWS``.
@@ -104,17 +122,24 @@ index 8719524d5a..a336dbf79d 100644
 +    model: Optional[str],
 +    rate_windows: Optional[dict[str, Any]] = None,
 +) -> Optional[dict[str, Any]]:
-+    """Return the first configured rate window whose key matches *model*.
++    """Return the rate window whose key matches *model*, longest key preferred.
 +
 +    Keys are matched case-insensitively as substrings against the bare model
-+    id (vendor prefix stripped). None when no window matches — the caller
-+    then skips the ``rate_tier`` field silently.
++    id (vendor prefix stripped). When several keys match, the LONGEST one wins
++    — a specific matcher (``deepseek-v4-flash``) always beats a generic one
++    (``deepseek``) regardless of dict insertion order. None when no window
++    matches — the caller then skips the ``rate_tier`` field silently.
 +    """
 +    if not model:
 +        return None
 +    windows = rate_windows or _DEFAULT_RATE_WINDOWS
 +    bare = model.rsplit("/", 1)[-1].lower()
-+    for key, win in windows.items():
++    # Sort by key length descending. Insertion order is NOT meaningful here:
++    # _merge_rate_windows seeds the built-in defaults first, so iterating in
++    # order would return the generic 'deepseek' window before a user's more
++    # specific entry was ever checked, silently inverting their config.
++    for key in sorted(windows, key=len, reverse=True):
++        win = windows[key]
 +        if key.lower() in bare:
 +            return win
 +    return None
@@ -128,6 +153,19 @@ index 8719524d5a..a336dbf79d 100644
 +        except Exception:
 +            pass
 +    return now.astimezone(_dt.timezone.utc).hour
++
++
++def _weekday_in_tz(now: _dt.datetime, tz_name: str) -> str:
++    """Lowercased 3-letter weekday of *now* in *tz_name* (``'sat'``).
++
++    Falls back to UTC on bad tz data, mirroring ``_hour_in_tz``.
++    """
++    if _ZoneInfo is not None:
++        try:
++            return now.astimezone(_ZoneInfo(tz_name)).strftime("%a").lower()
++        except Exception:
++            pass
++    return now.astimezone(_dt.timezone.utc).strftime("%a").lower()
 +
 +
 +def rate_tier_for_model(
@@ -147,12 +185,31 @@ index 8719524d5a..a336dbf79d 100644
 +        return None
 +    now = now or _dt.datetime.now(_dt.timezone.utc)
 +    hour = _hour_in_tz(now, str(win.get("tz") or "UTC"))
++    # All-day off-peak day rule (e.g. DeepSeek bills off-peak all day on
++    # Beijing weekends). Weekend-ness is a property of the LOCAL date, so the
++    # weekday is evaluated in the rule's own timezone — never the UTC date,
++    # which disagrees with a fixed-offset local weekend for part of each day.
++    day_rule = win.get("off_peak_days")
++    if isinstance(day_rule, dict):
++        days = day_rule.get("days")
++        if isinstance(days, (list, tuple)) and days:
++            weekday = _weekday_in_tz(now, str(day_rule.get("tz") or "UTC"))
++            if weekday in {str(d).strip().lower()[:3] for d in days}:
++                return "off-peak"
 +    for start, end in win.get("peak") or ():
 +        try:
 +            start_i, end_i = int(start), int(end)
 +        except (TypeError, ValueError):
 +            continue
-+        if start_i <= hour < end_i:
++        # Half-open [start, end); a window whose end <= start wraps midnight
++        # ([[22, 2]] → 22:00-01:59 peak). Without the wrap branch such a
++        # window parses fine but silently matches nothing.
++        in_window = (
++            start_i <= hour < end_i
++            if start_i <= end_i
++            else (hour >= start_i or hour < end_i)
++        )
++        if in_window:
 +            return "peak"
 +    return "off-peak"
 +
@@ -160,7 +217,7 @@ index 8719524d5a..a336dbf79d 100644
  def resolve_footer_config(
      user_config: dict[str, Any] | None,
      platform_key: str | None = None,
-@@ -73,7 +199,11 @@ def resolve_footer_config(
+@@ -73,7 +256,11 @@ def resolve_footer_config(
          2. ``display.runtime_footer``
          3. ``display.platforms.<platform_key>.runtime_footer``
      """
@@ -173,7 +230,7 @@ index 8719524d5a..a336dbf79d 100644
      cfg = (user_config or {}).get("display") or {}
  
      global_cfg = cfg.get("runtime_footer")
-@@ -82,6 +212,8 @@ def resolve_footer_config(
+@@ -82,6 +269,8 @@ def resolve_footer_config(
              resolved["enabled"] = bool(global_cfg.get("enabled"))
          if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
              resolved["fields"] = [str(f) for f in global_cfg["fields"]]
@@ -182,7 +239,7 @@ index 8719524d5a..a336dbf79d 100644
  
      if platform_key:
          platforms = cfg.get("platforms") or {}
-@@ -93,10 +225,37 @@ def resolve_footer_config(
+@@ -93,10 +282,37 @@ def resolve_footer_config(
                      resolved["enabled"] = bool(plat_footer.get("enabled"))
                  if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                      resolved["fields"] = [str(f) for f in plat_footer["fields"]]
@@ -220,7 +277,7 @@ index 8719524d5a..a336dbf79d 100644
  def _format_latency(seconds: float) -> str:
      """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``."""
      if seconds < 1:
-@@ -116,11 +275,14 @@ def format_runtime_footer(
+@@ -116,11 +332,14 @@ def format_runtime_footer(
      cwd: Optional[str] = None,
      turn_seconds: Optional[float] = None,
      fields: Iterable[str] = _DEFAULT_FIELDS,
@@ -235,7 +292,7 @@ index 8719524d5a..a336dbf79d 100644
      """
      parts: list[str] = []
      for field in fields:
-@@ -141,6 +303,12 @@ def format_runtime_footer(
+@@ -141,6 +360,12 @@ def format_runtime_footer(
              rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
              if rel:
                  parts.append(rel)
@@ -248,7 +305,7 @@ index 8719524d5a..a336dbf79d 100644
          # Unknown field names are silently ignored.
  
      if not parts:
-@@ -178,4 +346,5 @@ def build_footer_line(
+@@ -178,4 +403,5 @@ def build_footer_line(
          cwd=cwd,
          turn_seconds=turn_seconds,
          fields=cfg.get("fields") or _DEFAULT_FIELDS,

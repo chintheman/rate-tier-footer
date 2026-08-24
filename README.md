@@ -14,13 +14,14 @@ claude-sonnet-4-6 · 40% · ~                 ← non-DeepSeek: field silently s
 Hermes' usage estimator was quoting a stale July pricing snapshot while
 DeepSeek's live rates were **2–5× higher** — a `$9.87`/week estimate against
 ~`$20` actually burned. DeepSeek bills **peak = 2× off-peak**
-(peak: 01:00–04:00 + 06:00–10:00 UTC; off-peak is half price), so *when* you
-run matters as much as *how much* you run. The `rate_tier` footer field makes
+(peak: 01:00–04:00 + 06:00–10:00 UTC; off-peak is half price, and all day on
+Beijing Saturdays/Sundays), so *when* you run matters as much as *how much*
+you run. The `rate_tier` footer field makes
 the billing tier visible on every reply, and made it obvious enough to move
 six scheduled jobs out of peak hours — halving their token cost.
 
 DeepSeek is the **only** major LLM provider with documented time-of-use
-pricing (verified 2026-08-21: Zhipu GLM and Moonshot/Kimi are flat; so are
+pricing (verified 2026-08-22: Zhipu GLM and Moonshot/Kimi are flat; so are
 OpenAI, Anthropic, Google, Mistral, xAI, Groq). The implementation is
 config-driven, so if another provider ever adopts peak/off-peak pricing, you
 just add their windows — no code change.
@@ -33,7 +34,7 @@ hermes skills install https://raw.githubusercontent.com/chintheman/rate-tier-foo
 
 Then tell your agent: **"Install the rate-tier footer."** The skill contains
 an executable recipe: it checks whether the code is already present (it is,
-once [PR #90921](https://github.com/NousResearch/hermes-agent/pull/90921)
+once [PR #91448](https://github.com/NousResearch/hermes-agent/pull/91448)
 merges upstream), applies the patch if not, enables the config, and verifies
 with a render check.
 
@@ -61,14 +62,25 @@ overwritten on update.
          deepseek:
            tz: Asia/Singapore
            peak: [[9, 12], [14, 18]]
+           # off_peak_days:            # optional: all-day off-peak rule
+           #   tz: Asia/Shanghai       #   weekday checked in THIS tz
+           #   days: [sat, sun]        #   never the UTC date
    ```
+   (The built-in default already covers DeepSeek — off-peak all day on
+   Beijing weekends, plus the 01:00–04:00 / 06:00–10:00 UTC peak hours.)
 3. Restart the gateway (`/restart` in gateway chat, or `hermes gateway restart`).
 
 ## How it works
 
 - The footer reads the **active model** at render time — no config per model.
 - `rate_tier` matches that model id (case-insensitive substring) against
-  `display.runtime_footer.rate_windows`.
+  `display.runtime_footer.rate_windows`; when several keys match, the
+  **longest key wins** (a specific `deepseek-v4-flash` beats generic
+  `deepseek`).
+- Peak windows are half-open `[start, end)` and may wrap midnight
+  (`[[22, 2]]` = 22:00–01:59 peak). Optional `off_peak_days` marks whole days
+  off-peak (the DeepSeek Beijing-weekend rule is built in; evaluated in the
+  rule's own timezone, never the UTC date).
 - DeepSeek's windows ship as a built-in default; user config **deep-merges**
   over it, so a partial map keeps DeepSeek working.
 - Non-matching models (Claude, GPT, Gemini…) render no tier — silently, no
@@ -86,6 +98,6 @@ overwritten on update.
 ## Credits
 
 - Feature + pricing fix: [chintheman](https://github.com/chintheman) ·
-  upstream PR: [NousResearch/hermes-agent#90921](https://github.com/NousResearch/hermes-agent/pull/90921)
-- Rates verified live against https://api-docs.deepseek.com/quick_start/pricing (2026-08-20)
+  upstream PR: [NousResearch/hermes-agent#91448](https://github.com/NousResearch/hermes-agent/pull/91448)
+- Rates verified live against https://api-docs.deepseek.com/quick_start/pricing (2026-08-22)
 - MIT — build on it, share it, send it to your agent.
