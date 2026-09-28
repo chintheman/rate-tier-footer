@@ -1,28 +1,25 @@
 diff --git a/gateway/runtime_footer.py b/gateway/runtime_footer.py
-index 8719524d5..2d8f4d1ed 100644
+index 54c923c8..b016837f 100644
 --- a/gateway/runtime_footer.py
 +++ b/gateway/runtime_footer.py
-@@ -16,9 +16,44 @@ Available fields:
-     context_pct  — last-call context occupancy as a percent (``5%``)
-     latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
-     cwd          — home-relative working dir (``~``)
-+    rate_tier    — billing tier for the current hour (``peak`` / ``off-peak``)
-+                   for providers with time-of-use pricing, e.g. DeepSeek's
-+                   peak/off-peak rates. Config-driven and model-agnostic — see
-+                   ``rate_windows`` below. Skipped silently when the active
-+                   model matches no configured window.
- 
--``latency`` is opt-in: it is NOT in the default field set, so a footer whose
--``fields`` are unset renders exactly as before.
-+``latency`` and ``rate_tier`` are opt-in: they are NOT in the default field
-+set, so a footer whose ``fields`` are unset renders exactly as before.
+@@ -5,18 +5,66 @@ toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``cont
+ occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
+ renders exactly as before), ``served_model`` (opt-in, ``alias → served``: the deployment a routing
+ proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``, or Hermes' own fallback
+-route; skipped when the served model is the requested one), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
++route; skipped when the served model is the requested one), ``rate_tier`` (opt-in, ``peak`` /
++``off-peak``: the current billing tier for providers with time-of-use pricing, e.g. DeepSeek.
++Config-driven and model-agnostic via ``rate_windows`` below; skipped silently when the active model
++matches no configured window), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
+ final response only (never to tool-progress or streaming partials); when streaming already
+-delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
++delivered the text, it goes out as a trailing message via ``send_trailing_footer()``.
 +
-+``rate_windows`` (optional) — time-of-use pricing windows, keyed by model
-+substring (matched case-insensitively against the bare model id). When
-+several keys match a model, the LONGEST key wins, so a specific matcher
-+(``deepseek-v4-flash``) always beats a generic one (``deepseek``) regardless
-+of config order. Peak hours are half-open ``[start, end)`` in the window's
-+timezone and may wrap midnight (``[[22, 2]]`` = 22:00–01:59, all peak)::
++``rate_windows`` (optional) — time-of-use pricing windows, keyed by model substring (matched
++case-insensitively against the bare model id). When several keys match a model, the LONGEST key
++wins, so a specific matcher (``deepseek-v4-flash``) always beats a generic one (``deepseek``)
++regardless of config order. Peak hours are half-open ``[start, end)`` in the window's timezone and
++may wrap midnight (``[[22, 2]]`` = 22:00-01:59, all peak)::
 +
 +    display:
 +      runtime_footer:
@@ -36,20 +33,13 @@ index 8719524d5..2d8f4d1ed 100644
 +              tz: Asia/Shanghai           #   weekday checked in THIS tz
 +              days: [sat, sun]            #   never the UTC date
 +
-+``off_peak_days`` marks whole days as off-peak (e.g. DeepSeek bills off-peak
-+all day on Beijing weekends). The weekday is evaluated in the rule's own
-+timezone — never the UTC date — so a provider whose weekend is bounded in a
-+fixed-offset local time stays correct even when a peak window crosses the
-+UTC date line.
-+
-+Built-in default (used when the key is absent): DeepSeek's published windows
-+(01-04 and 06-10 UTC; off-peak all day on Beijing Saturdays/Sundays). User
-+entries deep-merge over the default, so a partial ``rate_windows`` map keeps
-+the DeepSeek default for any matcher not listed.
- 
- Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
- Users can toggle the global setting with ``/footer on|off`` from both the CLI
-@@ -34,12 +69,34 @@ piecemeal, the footer is sent as a separate trailing message via
++``off_peak_days`` marks whole days as off-peak (e.g. DeepSeek bills off-peak all day on Beijing
++weekends). The weekday is evaluated in the rule's own timezone, never the UTC date, so a provider
++whose weekend is bounded in a fixed-offset local time stays correct even when a peak window crosses
++the UTC date line. Built-in default (used when the key is absent): DeepSeek's published windows
++(01-04 and 06-10 UTC; off-peak all day on Beijing Saturdays/Sundays). User entries deep-merge over
++the default, so a partial ``rate_windows`` map keeps the DeepSeek default for any matcher not
++listed."""
  
  from __future__ import annotations
  
@@ -65,83 +55,47 @@ index 8719524d5..2d8f4d1ed 100644
  _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
  _SEP = " · "
  
-+# Built-in time-of-use pricing windows. Keyed by model substring; peak hours
-+# are half-open [start, end) in the entry's timezone. Source for the DeepSeek
-+# default: https://api-docs.deepseek.com/quick_start/pricing (verified
-+# 2026-08-22) — peak 01:00-04:00 and 06:00-10:00 UTC, off-peak is half price,
-+# and off-peak applies ALL DAY on Saturdays and Sundays Beijing time.
++# Built-in time-of-use pricing windows. Keyed by model substring; peak hours are half-open
++# [start, end) in the entry's timezone. Source for the DeepSeek default:
++# https://api-docs.deepseek.com/quick_start/pricing (verified 2026-08-22) — peak 01:00-04:00 and
++# 06:00-10:00 UTC, off-peak is half price, and off-peak applies ALL DAY on Saturdays and Sundays
++# Beijing time.
 +_DEFAULT_RATE_WINDOWS: dict[str, dict[str, Any]] = {
 +    "deepseek": {
 +        "tz": "UTC",
 +        "peak": [(1, 4), (6, 10)],
-+        "off_peak_days": {
-+            "tz": "Asia/Shanghai",
-+            "days": ["sat", "sun"],
-+        },
++        "off_peak_days": {"tz": "Asia/Shanghai", "days": ["sat", "sun"]},
 +    },
 +}
 +
  
  def _home_relative_cwd(cwd: str) -> str:
      """Return *cwd* with ``$HOME`` collapsed to ``~``.  Empty string if unset."""
-@@ -62,6 +119,132 @@ def _model_short(model: Optional[str]) -> str:
-     return model.rsplit("/", 1)[-1]
+@@ -45,10 +93,126 @@ def _env_cwd() -> str:
+     return terminal_env("TERMINAL_CWD", "")
  
  
-+# DeepSeek peak/off-peak billing windows, in UTC (source: api-docs.deepseek.com
-+# /quick_start/pricing, verified 2026-08-22). Peak hours are 01:00-04:00 and
-+# 06:00-10:00 UTC; all other hours are off-peak at half the price. SGT (UTC+8)
-+# equivalents: 09:00-12:00 and 14:00-18:00. Kept for backward-compatible
-+# helpers; the config-driven path is ``_DEFAULT_RATE_WINDOWS``.
-+_DEEPSEEK_PEAK_WINDOWS_UTC: tuple[tuple[int, int], ...] = (
-+    (1, 4),   # 01:00-04:00 UTC → 09:00-12:00 SGT
-+    (6, 10),  # 06:00-10:00 UTC → 14:00-18:00 SGT
-+)
-+
-+
-+def _is_deepseek_model(model: Optional[str]) -> bool:
-+    """True when *model* is a DeepSeek-hosted model (any vendor prefix form)."""
-+    return bool(model) and ("deepseek" in model.lower())
-+
-+
-+def deepseek_rate_tier(now_utc: Optional[_dt.datetime] = None) -> str:
-+    """Return the DeepSeek billing tier for the current UTC hour: ``peak`` or ``off-peak``.
-+
-+    Peak windows per DeepSeek's published pricing (see ``_DEEPSEEK_PEAK_WINDOWS_UTC``).
-+    Uses UTC so the tier is independent of the host's local timezone.
-+    """
-+    now = now_utc or _dt.datetime.now(_dt.timezone.utc)
-+    hour = now.hour
-+    for start, end in _DEEPSEEK_PEAK_WINDOWS_UTC:
-+        if start <= hour < end:
-+            return "peak"
-+    return "off-peak"
-+
-+
 +def _match_rate_windows(
 +    model: Optional[str],
 +    rate_windows: Optional[dict[str, Any]] = None,
 +) -> Optional[dict[str, Any]]:
 +    """Return the rate window whose key matches *model*, longest key preferred.
 +
-+    Keys are matched case-insensitively as substrings against the bare model
-+    id (vendor prefix stripped). When several keys match, the LONGEST one wins
-+    — a specific matcher (``deepseek-v4-flash``) always beats a generic one
-+    (``deepseek``) regardless of dict insertion order. None when no window
-+    matches — the caller then skips the ``rate_tier`` field silently.
++    Keys are matched case-insensitively as substrings against the bare model id (vendor prefix
++    stripped). When several keys match, the LONGEST one wins — a specific matcher
++    (``deepseek-v4-flash``) always beats a generic one (``deepseek``) regardless of dict insertion
++    order. None when no window matches — the caller then skips the ``rate_tier`` field silently.
 +    """
 +    if not model:
 +        return None
 +    windows = rate_windows or _DEFAULT_RATE_WINDOWS
 +    bare = model.rsplit("/", 1)[-1].lower()
-+    # Sort by key length descending. Insertion order is NOT meaningful here:
-+    # _merge_rate_windows seeds the built-in defaults first, so iterating in
-+    # order would return the generic 'deepseek' window before a user's more
-+    # specific entry was ever checked, silently inverting their config.
++    # Sort by key length descending. Insertion order is NOT meaningful here: _merge_rate_windows
++    # seeds the built-in defaults first, so iterating in order would return the generic 'deepseek'
++    # window before a user's more specific entry was ever checked, silently inverting their config.
 +    for key in sorted(windows, key=len, reverse=True):
-+        win = windows[key]
 +        if key.lower() in bare:
-+            return win
++            return windows[key]
 +    return None
 +
 +
@@ -175,20 +129,19 @@ index 8719524d5..2d8f4d1ed 100644
 +) -> Optional[str]:
 +    """Return ``peak``/``off-peak`` for *model* per configured windows, or None.
 +
-+    Provider-agnostic: the window set comes from ``rate_windows`` (or the
-+    built-in ``_DEFAULT_RATE_WINDOWS`` DeepSeek default when none supplied).
-+    Returns None when the model matches no window — the footer field is then
-+    silently skipped.
++    Provider-agnostic: the window set comes from ``rate_windows`` (or the built-in
++    ``_DEFAULT_RATE_WINDOWS`` DeepSeek default when none supplied). Returns None when the model
++    matches no window — the footer field is then silently skipped.
 +    """
 +    win = _match_rate_windows(model, rate_windows)
 +    if win is None:
 +        return None
 +    now = now or _dt.datetime.now(_dt.timezone.utc)
 +    hour = _hour_in_tz(now, str(win.get("tz") or "UTC"))
-+    # All-day off-peak day rule (e.g. DeepSeek bills off-peak all day on
-+    # Beijing weekends). Weekend-ness is a property of the LOCAL date, so the
-+    # weekday is evaluated in the rule's own timezone — never the UTC date,
-+    # which disagrees with a fixed-offset local weekend for part of each day.
++    # All-day off-peak day rule (e.g. DeepSeek bills off-peak all day on Beijing weekends).
++    # Weekend-ness is a property of the LOCAL date, so the weekday is evaluated in the rule's own
++    # timezone — never the UTC date, which disagrees with a fixed-offset local weekend for part of
++    # each day.
 +    day_rule = win.get("off_peak_days")
 +    if isinstance(day_rule, dict):
 +        days = day_rule.get("days")
@@ -201,67 +154,27 @@ index 8719524d5..2d8f4d1ed 100644
 +            start_i, end_i = int(start), int(end)
 +        except (TypeError, ValueError):
 +            continue
-+        # Half-open [start, end); a window whose end <= start wraps midnight
-+        # ([[22, 2]] → 22:00-01:59 peak). Without the wrap branch such a
-+        # window parses fine but silently matches nothing.
++        # Half-open [start, end); a window whose end <= start wraps midnight ([[22, 2]] →
++        # 22:00-01:59 peak). Without the wrap branch such a window parses fine but silently
++        # matches nothing.
 +        in_window = (
-+            start_i <= hour < end_i
-+            if start_i <= end_i
-+            else (hour >= start_i or hour < end_i)
++            start_i <= hour < end_i if start_i <= end_i else (hour >= start_i or hour < end_i)
 +        )
 +        if in_window:
 +            return "peak"
 +    return "off-peak"
 +
 +
- def resolve_footer_config(
-     user_config: dict[str, Any] | None,
-     platform_key: str | None = None,
-@@ -73,7 +256,11 @@ def resolve_footer_config(
-         2. ``display.runtime_footer``
-         3. ``display.platforms.<platform_key>.runtime_footer``
-     """
--    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
-+    resolved = {
-+        "enabled": False,
-+        "fields": list(_DEFAULT_FIELDS),
-+        "rate_windows": _merge_rate_windows(None),
-+    }
-     cfg = (user_config or {}).get("display") or {}
- 
-     global_cfg = cfg.get("runtime_footer")
-@@ -82,6 +269,8 @@ def resolve_footer_config(
-             resolved["enabled"] = bool(global_cfg.get("enabled"))
-         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
-             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
-+        if isinstance(global_cfg.get("rate_windows"), dict):
-+            resolved["rate_windows"] = _merge_rate_windows(global_cfg["rate_windows"])
- 
-     if platform_key:
-         platforms = cfg.get("platforms") or {}
-@@ -93,10 +282,37 @@ def resolve_footer_config(
-                     resolved["enabled"] = bool(plat_footer.get("enabled"))
-                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
-                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
-+                if isinstance(plat_footer.get("rate_windows"), dict):
-+                    resolved["rate_windows"] = _merge_rate_windows(
-+                        plat_footer["rate_windows"]
-+                    )
- 
-     return resolved
- 
- 
-+def _merge_rate_windows(
-+    user_windows: Optional[dict[str, Any]],
-+) -> dict[str, Any]:
++def _merge_rate_windows(user_windows: Optional[dict[str, Any]]) -> dict[str, Any]:
 +    """Merge user ``rate_windows`` over the built-in defaults (deep, per key).
 +
-+    A partial user map keeps the DeepSeek default for matchers not listed.
-+    Non-dict values are replaced wholesale (a user entry is authoritative).
++    A partial user map keeps the DeepSeek default for matchers not listed. Non-dict values are
++    replaced wholesale (a user entry is authoritative).
 +    """
-+    merged: dict[str, Any] = {}
-+    for key, val in _DEFAULT_RATE_WINDOWS.items():
-+        merged[key] = dict(val) if isinstance(val, dict) else val
++    merged: dict[str, Any] = {
++        key: (dict(val) if isinstance(val, dict) else val)
++        for key, val in _DEFAULT_RATE_WINDOWS.items()
++    }
 +    if not isinstance(user_windows, dict):
 +        return merged
 +    for key, val in user_windows.items():
@@ -274,40 +187,141 @@ index 8719524d5..2d8f4d1ed 100644
 +    return merged
 +
 +
- def _format_latency(seconds: float) -> str:
-     """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``."""
-     if seconds < 1:
-@@ -116,11 +332,14 @@ def format_runtime_footer(
-     cwd: Optional[str] = None,
-     turn_seconds: Optional[float] = None,
-     fields: Iterable[str] = _DEFAULT_FIELDS,
-+    rate_windows: Optional[dict[str, Any]] = None,
- ) -> str:
-     """Render the footer line, or return "" if no fields have data.
+ def resolve_footer_config(user_config: dict[str, Any] | None, platform_key: str | None = None) -> dict[str, Any]:
+     """Resolve effective footer config: defaults (enabled=False) <
+     ``display.runtime_footer`` < ``display.platforms.<platform_key>.runtime_footer``."""
+-    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
++    resolved = {
++        "enabled": False,
++        "fields": list(_DEFAULT_FIELDS),
++        "rate_windows": _merge_rate_windows(None),
++    }
+     cfg = (user_config or {}).get("display") or {}
+     plat_cfg = (cfg.get("platforms") or {}).get(platform_key) if platform_key else None
+     sections = [cfg.get("runtime_footer"), plat_cfg.get("runtime_footer") if isinstance(plat_cfg, dict) else None]
+@@ -59,6 +223,8 @@ def resolve_footer_config(user_config: dict[str, Any] | None, platform_key: str
+             resolved["enabled"] = bool(section.get("enabled"))
+         if isinstance(section.get("fields"), list) and section["fields"]:
+             resolved["fields"] = [str(f) for f in section["fields"]]
++        if isinstance(section.get("rate_windows"), dict):
++            resolved["rate_windows"] = _merge_rate_windows(section["rate_windows"])
+     return resolved
  
-     Fields are skipped silently when their underlying data is missing — a
-     partially-populated footer is better than a line with ``?%`` or empty slots.
-+    ``rate_windows`` is the resolved time-of-use window map (defaults merged);
-+    pass ``None`` to use the built-in DeepSeek default.
-     """
-     parts: list[str] = []
-     for field in fields:
-@@ -141,6 +360,12 @@ def format_runtime_footer(
-             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
-             if rel:
-                 parts.append(rel)
-+        elif field == "rate_tier":
-+            # Time-of-use billing awareness (e.g. DeepSeek peak/off-peak).
-+            # Rendered only when the active model matches a configured window.
-+            tier = rate_tier_for_model(model, rate_windows)
-+            if tier is not None:
-+                parts.append(tier)
-         # Unknown field names are silently ignored.
  
-     if not parts:
-@@ -178,4 +403,5 @@ def build_footer_line(
-         cwd=cwd,
-         turn_seconds=turn_seconds,
-         fields=cfg.get("fields") or _DEFAULT_FIELDS,
-+        rate_windows=cfg.get("rate_windows"),
-     )
+@@ -77,9 +243,12 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
+                           context_length: Optional[int], cwd: Optional[str] = None,
+                           turn_seconds: Optional[float] = None,
+                           requested_model: Optional[str] = None, served_model: Optional[str] = None,
+-                          fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
++                          fields: Iterable[str] = _DEFAULT_FIELDS,
++                          rate_windows: Optional[dict[str, Any]] = None) -> str:
+     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
+-    unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
++    unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots.
++    ``rate_windows`` is the resolved time-of-use window map (defaults merged); pass ``None`` to use
++    the built-in DeepSeek default."""
+     def context_pct() -> str:
+         if context_length and context_length > 0 and context_tokens >= 0:
+             return f"{max(0, min(100, round((context_tokens / context_length) * 100)))}%"
+@@ -98,6 +267,9 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
+         "context_pct": context_pct,
+         # Skipped when the caller did not measure (None) or the value is negative.
+         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
++        # Time-of-use billing awareness (e.g. DeepSeek peak/off-peak). Rendered only when the
++        # active model matches a configured window.
++        "rate_tier": lambda: rate_tier_for_model(model, rate_windows) or "",
+         "cwd": lambda: _home_relative_cwd(cwd or _env_cwd()),
+     }
+     return _SEP.join(v for field in fields if (render := renderers.get(field)) and (v := render()))
+@@ -117,4 +289,5 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
+     return format_runtime_footer(model=model, context_tokens=context_tokens,
+                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
+                                  requested_model=requested_model, served_model=served_model,
+-                                 fields=cfg.get("fields") or _DEFAULT_FIELDS)
++                                 fields=cfg.get("fields") or _DEFAULT_FIELDS,
++                                 rate_windows=cfg.get("rate_windows"))
+diff --git a/tests/gateway/test_runtime_footer.py b/tests/gateway/test_runtime_footer.py
+index d4b619af..76197a49 100644
+--- a/tests/gateway/test_runtime_footer.py
++++ b/tests/gateway/test_runtime_footer.py
+@@ -6,11 +6,14 @@ from __future__ import annotations
+ 
+ import pytest
+ 
++from datetime import datetime, timezone
++
+ from gateway.runtime_footer import (
+     _home_relative_cwd,
+     _model_short,
+     build_footer_line,
+     format_runtime_footer,
++    rate_tier_for_model,
+     resolve_footer_config,
+ )
+ 
+@@ -279,3 +282,65 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
+     assert format_runtime_footer(
+         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
+         served_model=None, fields=["served_model"]) == ""
++
++
++# ---------------------------------------------------------------------------
++# rate_tier (DeepSeek peak/off-peak billing awareness)
++# ---------------------------------------------------------------------------
++
++def test_rate_tier_deepseek_built_in_windows():
++    peak = datetime(2026, 1, 1, 2, tzinfo=timezone.utc)      # 02:00 UTC -> peak
++    off = datetime(2026, 1, 1, 13, tzinfo=timezone.utc)      # 13:00 UTC -> off-peak
++    assert rate_tier_for_model("deepseek-v4-flash", now=peak) == "peak"
++    assert rate_tier_for_model("deepseek-v4-flash", now=off) == "off-peak"
++    assert rate_tier_for_model("deepseek/deepseek-v4-pro", now=peak) == "peak"
++
++
++def test_rate_tier_skips_non_matching_model():
++    assert rate_tier_for_model("claude-sonnet-4-6", now=datetime(2026, 1, 1, 2, tzinfo=timezone.utc)) is None
++
++
++def test_rate_tier_beijing_weekend_is_all_day_off_peak():
++    sat = datetime(2026, 8, 22, 2, tzinfo=timezone.utc)      # Beijing Sat 10:00
++    mon = datetime(2026, 8, 24, 2, tzinfo=timezone.utc)      # Beijing Mon 10:00
++    assert rate_tier_for_model("deepseek-v4-flash", now=sat) == "off-peak"
++    assert rate_tier_for_model("deepseek-v4-flash", now=mon) == "peak"
++
++
++def test_rate_tier_window_wraps_midnight():
++    nightowl = {"nightowl": {"tz": "UTC", "peak": [[22, 2]]}}
++    assert rate_tier_for_model(
++        "nightowl-1", nightowl, now=datetime(2026, 1, 1, 23, tzinfo=timezone.utc)) == "peak"
++
++
++def test_rate_tier_longest_matcher_key_wins():
++    win = {"deepseek": {"tz": "UTC", "peak": [[1, 4], [6, 10]]},
++           "deepseek-v4-flash": {"tz": "UTC", "peak": [[20, 23]]}}
++    assert rate_tier_for_model(
++        "deepseek-v4-flash", win, now=datetime(2026, 1, 1, 21, tzinfo=timezone.utc)) == "peak"
++
++
++def test_rate_tier_custom_timezone_window():
++    cfg = {"deepseek": {"tz": "Asia/Singapore", "peak": [[9, 12], [14, 18]]}}
++    assert rate_tier_for_model(
++        "deepseek-v4-flash", cfg, now=datetime(2026, 1, 1, 2, tzinfo=timezone.utc)) == "peak"
++
++
++def test_rate_tier_is_opt_in_and_renders_in_footer():
++    line = format_runtime_footer(
++        model="deepseek-v4-flash", context_tokens=2048, context_length=8192,
++        fields=["model", "rate_tier"])
++    assert "peak" in line or "off-peak" in line
++    line2 = format_runtime_footer(
++        model="claude-sonnet-4-6", context_tokens=2048, context_length=8192,
++        fields=["model", "rate_tier"])
++    assert "peak" not in line2 and "off-peak" not in line2
++
++
++def test_resolve_footer_config_merges_rate_windows_over_default():
++    cfg = resolve_footer_config(
++        {"display": {"runtime_footer": {"enabled": True,
++                                        "rate_windows": {"deepseek": {"tz": "Asia/Singapore"}}}}})
++    assert cfg["rate_windows"]["deepseek"]["tz"] == "Asia/Singapore"
++    # peak/off_peak_days not overridden by the partial user entry: default kept.
++    assert cfg["rate_windows"]["deepseek"]["peak"] == [(1, 4), (6, 10)]

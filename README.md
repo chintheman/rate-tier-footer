@@ -26,17 +26,25 @@ OpenAI, Anthropic, Google, Mistral, xAI, Groq). The implementation is
 config-driven, so if another provider ever adopts peak/off-peak pricing, you
 just add their windows — no code change.
 
-## Install (one command)
+## Install (two steps)
+
+Step 1, install the skill:
 
 ```bash
 hermes skills install https://raw.githubusercontent.com/chintheman/rate-tier-footer/main/SKILL.md
 ```
 
-Then tell your agent: **"Install the rate-tier footer."** The skill contains
-an executable recipe: it checks whether the code is already present (it is,
-once [PR #91448](https://github.com/NousResearch/hermes-agent/pull/91448)
-merges upstream), applies the patch if not, enables the config, and verifies
-with a render check.
+Step 2, tell your agent: **"Install the rate-tier footer."** That second step
+is required; installing the skill only makes the recipe available, it does
+not run it. The skill contains an executable recipe: it checks whether the
+code is already present (it is, once
+[PR #91448](https://github.com/NousResearch/hermes-agent/pull/91448) merges
+upstream), applies the patch if not, enables the config, and verifies with a
+render check.
+
+Tested against `NousResearch/hermes-agent` main @ `e408d363393ccb72267e67bcccf4f8954b438cd9`,
+2026-09-28. Re-run `scripts/check-patch.sh` after any upstream update to
+`gateway/runtime_footer.py` to confirm the patch still applies.
 
 Requires the git-installed Hermes source at `~/.hermes/hermes-agent/` (the
 default from the official installer). Pip installs work but the patch is
@@ -86,6 +94,14 @@ overwritten on update.
 - Non-matching models (Claude, GPT, Gemini…) render no tier — silently, no
   noise, no footer change for anyone not on a tiered provider.
 - `rate_tier` is opt-in: it is NOT in the default field set.
+- **Chinese public holidays are not handled.** DeepSeek's current pricing
+  docs say peak hours are also waived (all day is off-peak) on Chinese
+  public holidays, in addition to the built in weekend rule. This patch only
+  implements the weekday/weekend check; there is no holiday calendar, so the
+  footer can show `peak` on a holiday that DeepSeek is actually billing at
+  the off-peak rate. Treat the footer as directionally correct, and check
+  the live DeepSeek pricing page around Chinese public holidays if the exact
+  tier matters to you.
 
 ## Files
 
@@ -93,6 +109,7 @@ overwritten on update.
 |------|---------|
 | `SKILL.md` | Agent-executable recipe (check → patch → config → verify) |
 | `references/runtime-footer-rate-tier.patch` | Exact upstream diff for `gateway/runtime_footer.py` |
+| `scripts/check-patch.sh` | Release gate: clones upstream main and checks the patch still applies |
 | `README.md` | This file |
 
 ## Credits

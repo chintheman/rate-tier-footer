@@ -35,14 +35,23 @@ deepseek-v4-flash · 12% · off-peak · ~      ← overnight / lunch
 claude-sonnet-4-6 · 40% · ~                 ← non-DeepSeek: field silently skipped
 ```
 
-## Install
+## Install (two steps)
+
+Step 1, install the skill:
 
 ```bash
 hermes skills install https://raw.githubusercontent.com/chintheman/rate-tier-footer/main/SKILL.md
 ```
 
-Then tell your agent: **"Install the rate-tier footer"** (or just load this
-skill and run it — the recipe below is agent-executable).
+Step 2, tell your agent: **"Install the rate-tier footer."** Installing the
+skill only makes the recipe below available; it does not run it. The recipe
+is agent-executable, so the second step is a plain instruction, not another
+command to type.
+
+Tested against `NousResearch/hermes-agent` main @
+`e408d363393ccb72267e67bcccf4f8954b438cd9`, 2026-09-28. Run
+`scripts/check-patch.sh` in this repo after any upstream update to
+`gateway/runtime_footer.py` to confirm the patch still applies.
 
 ## What this recipe does
 
@@ -89,35 +98,34 @@ fails (tree drifted from upstream main), fall back to the manual insertion
 below — do NOT force-apply with `--3way` or `--reject`.
 
 **Fallback (manual insertion):** edit `gateway/runtime_footer.py` with the
-agent's patch tool, using these anchors (the upstream file is the base):
+agent's patch tool, using these anchors (the current upstream file, with its
+merged one-paragraph docstring and ``served_model`` field, is the base):
 
-1. **Module docstring** — after the `cwd` field line, add:
-   ```
-       rate_tier    — billing tier for the current hour (``peak`` / ``off-peak``)
-                      for providers with time-of-use pricing, e.g. DeepSeek's
-                      peak/off-peak rates. Config-driven and model-agnostic — see
-                      ``rate_windows`` below. Skipped silently when the active
-                      model matches no configured window.
-   ```
-   and change the opt-in note from "``latency`` is opt-in" to
-   "``latency`` and ``rate_tier`` are opt-in".
+1. **Module docstring**: add a `rate_tier` field description alongside the
+   existing `model`/`context_pct`/`latency`/`served_model`/`cwd` list (opt-in,
+   `peak` / `off-peak`, config-driven via `rate_windows`, skipped silently
+   when the model matches no window), and append the `rate_windows` block
+   documentation (matcher rules, half-open peak hours, `off_peak_days`,
+   built-in DeepSeek default) as new paragraphs before the final sentence
+   about `gateway/run.py`.
 2. **Imports** — after `from __future__ import annotations`, add
    `import datetime as _dt`; after `import os`, add the zoneinfo try/except
    (see the patch file for exact text).
 3. **Module constants** — after `_SEP = " · "`, add the `_DEFAULT_RATE_WINDOWS`
    dict (DeepSeek default: `{"deepseek": {"tz": "UTC", "peak": [(1, 4), (6, 10)],
    "off_peak_days": {"tz": "Asia/Shanghai", "days": ["sat", "sun"]}}}`).
-4. **Helper functions** — insert `_DEEPSEEK_PEAK_WINDOWS_UTC`,
-   `_is_deepseek_model`, `deepseek_rate_tier`, `_match_rate_windows`,
-   `_hour_in_tz`, `_weekday_in_tz`, `rate_tier_for_model`, `_merge_rate_windows`
-   after `_model_short(...)` (exact code in the patch file).
+4. **Helper functions**: insert `_match_rate_windows`, `_hour_in_tz`,
+   `_weekday_in_tz`, `rate_tier_for_model`, `_merge_rate_windows` between
+   `_env_cwd()` and `resolve_footer_config` (exact code in the patch file).
 5. **`resolve_footer_config`** — add `"rate_windows": _merge_rate_windows(None)`
-   to the initial `resolved` dict, and merge user windows in both the global
-   and platform branches (`_merge_rate_windows(global_cfg["rate_windows"])`).
+   to the initial `resolved` dict, and inside the `sections` loop add
+   `if isinstance(section.get("rate_windows"), dict): resolved["rate_windows"]
+   = _merge_rate_windows(section["rate_windows"])`.
 6. **`format_runtime_footer`** — add `rate_windows: Optional[dict[str, Any]] = None`
-   parameter; add the `elif field == "rate_tier":` branch (render
-   `rate_tier_for_model(model, rate_windows)` only when not None).
-7. **`build_footer_line`** — pass `rate_windows=cfg.get("rate_windows")`.
+   as the last keyword parameter; add a `"rate_tier": lambda: rate_tier_for_model(model,
+   rate_windows) or ""` entry to the `renderers` dict.
+7. **`build_footer_line`**: pass `rate_windows=cfg.get("rate_windows")` in its
+   call to `format_runtime_footer`.
 
 The patch file `references/runtime-footer-rate-tier.patch` is the exact
 upstream diff — use it as the source of truth for every code block above.
@@ -217,6 +225,13 @@ the `peak`/`off-peak` token.
   GLM and Moonshot/Kimi both bill flat rates; OpenAI, Anthropic, Google,
   Mistral, xAI, Groq are all flat. The config design is future-proof, but
   there are no other providers to configure yet.
+- **Chinese public holidays are not handled.** DeepSeek's current docs say
+  peak pricing is also waived on Chinese public holidays, not just weekends.
+  This skill only implements the weekday/weekend check (`off_peak_days`), so
+  a holiday can render `peak` when DeepSeek is actually billing off-peak.
+  There is no holiday calendar built in; treat the field as directionally
+  correct and check DeepSeek's live pricing page around holidays if the
+  exact tier matters.
 - **Keep the snapshot fresh (optional).** Rates drift — the author runs a
   weekly watchdog that scrapes api-docs.deepseek.com and auto-patches
   `agent/usage_pricing.py` + the footer windows when they change
